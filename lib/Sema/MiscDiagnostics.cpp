@@ -3225,6 +3225,8 @@ checkImplicitPromotionsInCondition(const StmtConditionElement &cond,
   }
 }
 
+#include <stdio.h>
+
 static void diagnoseUnintendedOptionalBehavior(TypeChecker &TC, const Expr *E,
                                                const DeclContext *DC) {
   if (!E || isa<ErrorExpr>(E) || !E->getType())
@@ -3234,9 +3236,21 @@ static void diagnoseUnintendedOptionalBehavior(TypeChecker &TC, const Expr *E,
     TypeChecker &TC;
     SmallPtrSet<Expr *, 4> ErasureCoercedToAny;
 
+//    std::pair<bool, Stmt *> walkToStmtPre(Stmt *S) override {
+//      if (!S) { return { false, S }; }
+//
+//      S.
+//
+//      return { true, S };
+//    }
+
     std::pair<bool, Expr *> walkToExprPre(Expr *E) override {
       if (!E || isa<ErrorExpr>(E) || !E->getType())
         return { false, E };
+
+      auto E_sr = Lexer::getCharSourceRangeFromSourceRange(TC.Context.SourceMgr, E->getSourceRange());
+      auto E_text = E_sr.str();
+      printf("walkToExprPre %s\n", E_text.str().c_str());
 
       if (auto *coercion = dyn_cast<CoerceExpr>(E)) {
         if (E->getType()->isAny() && isa<ErasureExpr>(coercion->getSubExpr()))
@@ -3260,13 +3274,50 @@ static void diagnoseUnintendedOptionalBehavior(TypeChecker &TC, const Expr *E,
               .highlight(subExpr->getSourceRange())
               .fixItInsertAfter(subExpr->getEndLoc(), " as Any");
         }
+      } else if (auto *te = dyn_cast<TryExpr>(E)) {
+        auto sr = Lexer::getCharSourceRangeFromSourceRange(TC.Context.SourceMgr, te->getSourceRange());
+        printf("%s: [TryExpr]\n", sr.str().str().c_str());
+        TC.diagnose(te->getStartLoc(),
+                    diag::optional_in_string_interpolation_segment)
+        .highlight(te->getSourceRange());
+      } else if (auto *ote = dyn_cast<OptionalTryExpr>(E)) {
+        auto sr = Lexer::getCharSourceRangeFromSourceRange(TC.Context.SourceMgr, ote->getSourceRange());
+        printf("%s: [OptionalTryExpr]\n", sr.str().str().c_str());
+      } else if (auto *fte = dyn_cast<ForceTryExpr>(E)) {
+        auto sr = Lexer::getCharSourceRangeFromSourceRange(TC.Context.SourceMgr, fte->getSourceRange());
+        printf("%s: [ForceTryExpr]\n", sr.str().str().c_str());
       } else if (auto *literal = dyn_cast<InterpolatedStringLiteralExpr>(E)) {
         // Warn about interpolated segments that contain optionals.
         for (auto &segment : literal->getSegments()) {
+          // auto sm = TC.Context.SourceMgr;
+          auto sr = Lexer::getCharSourceRangeFromSourceRange(TC.Context.SourceMgr, segment->getSourceRange());
+          auto text = sr.str();
+          auto type = segment->getType();
+          auto rtype = type->getRValueType();
+          auto hasError = type->hasError();
+          // segment->getSourceRange().dump(TC.Context.SourceMgr);
+
           // Allow explicit casts.
           if (auto paren = dyn_cast<ParenExpr>(segment)) {
+            printf("%s: %s, rtype = %s, hasError = %s\n", text.str().c_str(), type->getString().c_str(), rtype->getString().c_str(), hasError ? "true" : "false");
+
+            auto subexpr = paren->getSubExpr();
+            subexpr->getKind();
+
             if (isa<ExplicitCastExpr>(paren->getSubExpr())) {
               continue;
+            }
+
+            if (isa<TryExpr>(subexpr)) {
+              printf("[TryExpr]\n");
+            }
+
+            if (isa<OptionalTryExpr>(subexpr)) {
+              printf("[OptionalTryExpr]\n");
+            }
+
+            if (isa<ForceTryExpr>(subexpr)) {
+              printf("[ForceTryExpr]\n");
             }
           }
 
