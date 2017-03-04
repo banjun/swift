@@ -3226,6 +3226,58 @@ checkImplicitPromotionsInCondition(const StmtConditionElement &cond,
 }
 
 #include <stdio.h>
+static void diagnoseTrySwiftConf(TypeChecker &TC, const Expr *E,
+                                               const DeclContext *DC) {
+  if (!E || isa<ErrorExpr>(E) || !E->getType())
+    return;
+
+  class TrySwiftConfWalker : public ASTWalker {
+    TypeChecker &TC;
+
+    std::pair<bool, Expr *> walkToExprPre(Expr *E) override {
+      if (!E || isa<ErrorExpr>(E) || !E->getType())
+        return { false, E };
+
+      if (auto *te = dyn_cast<AnyTryExpr>(E)) {
+        // try! is the only correct form for try! Swift
+        if (isa<ForceTryExpr>(E)) {
+          return { true, E };
+        }
+
+        auto sr = Lexer::getCharSourceRangeFromSourceRange(TC.Context.SourceMgr, te->getSourceRange());
+        auto subexpr = te->getSubExpr();
+        auto subsr = Lexer::getCharSourceRangeFromSourceRange(TC.Context.SourceMgr, subexpr->getSourceRange());
+        printf("%s: [TryExpr or OptionalTryExpr] (trying %s)\n", sr.str().str().c_str(), subsr.str().str().c_str());
+
+        auto nominal = subexpr->getType()->getNominalOrBoundGenericNominal(); // NOTE: what is nominal?
+        auto protocols = nominal->getAllProtocols();
+        bool conformsToTheConf = false;
+        for (auto &p : protocols) {
+          auto name = p->getNameStr().str();
+          printf("conforms to %s\n", name.c_str());
+          if (name == "Conf" || name == "SwiftConf") {
+            conformsToTheConf = true;
+            break;
+          }
+        }
+        // throwing calls with Conf conformance should be used with try!
+        if (conformsToTheConf) {
+          TC.diagnose(te->getStartLoc(), diag::force_try_swift)
+          .highlight(te->getSourceRange());
+//          printf("conformsToTheConf = %s\n", conformsToTheConf ? "true" : "false");
+        }
+      }
+
+      return { true, E };
+    }
+
+  public:
+    TrySwiftConfWalker(TypeChecker &tc) : TC(tc) { }
+  };
+
+  TrySwiftConfWalker Walker(TC);
+  const_cast<Expr *>(E)->walk(Walker);
+}
 
 static void diagnoseUnintendedOptionalBehavior(TypeChecker &TC, const Expr *E,
                                                const DeclContext *DC) {
@@ -3250,7 +3302,7 @@ static void diagnoseUnintendedOptionalBehavior(TypeChecker &TC, const Expr *E,
 
       auto E_sr = Lexer::getCharSourceRangeFromSourceRange(TC.Context.SourceMgr, E->getSourceRange());
       auto E_text = E_sr.str();
-      printf("walkToExprPre %s\n", E_text.str().c_str());
+//      printf("walkToExprPre %s\n", E_text.str().c_str());
 
       if (auto *coercion = dyn_cast<CoerceExpr>(E)) {
         if (E->getType()->isAny() && isa<ErasureExpr>(coercion->getSubExpr()))
@@ -3277,6 +3329,24 @@ static void diagnoseUnintendedOptionalBehavior(TypeChecker &TC, const Expr *E,
       } else if (auto *te = dyn_cast<TryExpr>(E)) {
         auto sr = Lexer::getCharSourceRangeFromSourceRange(TC.Context.SourceMgr, te->getSourceRange());
         printf("%s: [TryExpr]\n", sr.str().str().c_str());
+
+        auto subexpr = te->getSubExpr();
+        auto ssr = Lexer::getCharSourceRangeFromSourceRange(TC.Context.SourceMgr, subexpr->getSourceRange());
+        printf("^[TryExpr] of %s: %s\n", ssr.str().str().c_str(), subexpr->getType()->getRValueType()->getString().c_str());
+
+        auto nominal = subexpr->getType()->getNominalOrBoundGenericNominal(); // what is nominal? (-> has a name (enum, struct, class. in opposite, tuple has no name.))
+        auto protocols = nominal->getAllProtocols();
+        bool conformsToTheConf = false;
+        for (auto &p : protocols) {
+          auto name = p->getNameStr().str();
+          printf("conforms to %s\n", name.c_str());
+          if (name == "Conf") {
+            conformsToTheConf = true;
+            break;
+          }
+        }
+        printf("conformsToTheConf = %s\n", conformsToTheConf ? "true" : "false");
+
         TC.diagnose(te->getStartLoc(),
                     diag::optional_in_string_interpolation_segment)
         .highlight(te->getSourceRange());
@@ -3367,7 +3437,8 @@ void swift::performSyntacticExprDiagnostics(TypeChecker &TC, const Expr *E,
   diagSyntacticUseRestrictions(TC, E, DC, isExprStmt);
   diagRecursivePropertyAccess(TC, E, DC);
   diagnoseImplicitSelfUseInClosure(TC, E, DC);
-  diagnoseUnintendedOptionalBehavior(TC, E, DC);
+//  diagnoseUnintendedOptionalBehavior(TC, E, DC);
+  diagnoseTrySwiftConf(TC, E, DC);
   if (!TC.getLangOpts().DisableAvailabilityChecking)
     diagAvailability(TC, E, const_cast<DeclContext*>(DC));
   if (TC.Context.LangOpts.EnableObjCInterop)
